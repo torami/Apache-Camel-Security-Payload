@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:camel="http://camel.apache.org/schema/spring"
+	xmlns:spring-security="http://www.springframework.org/schema/security"
+	xsi:schemaLocation="
+       http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+       http://www.springframework.org/schema/security http://www.springframework.org/schema/security/spring-security.xsd
+       http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd
+       http://activemq.apache.org/schema/core http://activemq.apache.org/schema/core/activemq-core.xsd
+       http://camel.apache.org/schema/spring-security http://camel.apache.org/schema/spring-security/camel-spring-security.xsd">
+	<import resource="classpath:META-INF/spring/services.cxf.xml" />
+	<import resource="classpath:META-INF/spring/beans.xml" />
+
+
+	<!-- XMLSecurity keystore, key password must be identical with keystore 
+		password -->
+	<camel:keyStoreParameters id="sacStore"
+		resource="./sacStore.jks" password="sacStore" />
+
+	<camelContext id="camel" xmlns="http://camel.apache.org/schema/spring">
+		<dataFormats>
+			<jaxb id="simpleXML" contextPath="de.bit.camel.security" />
+
+			<crypto id="aes" algorithm="AES" keyRef="aesKey" />
+
+			<pgp id="rsaEncrypt" keyFileName="./pubring.asc" keyUserid="camel@bit.de" />
+			<pgp id="rsaDecrypt" keyFileName="./secring.asc" keyUserid="camel@bit.de"
+				password="hrSecret" />
+		</dataFormats>
+
+
+		<!-- call this web service with an signal ID value 10001 or 10002 -->
+		<route id="sigInfoService">
+			<from uri="cxf:bean:SigInfoService" />
+			<log message="sigInfoEndpoint started with body ${body}" />
+			<!-- body always consists of a String employee ID only -->
+			<convertBodyTo type="String" />
+			<!-- sign -->
+			<to
+				uri="crypto:sign://keystore?keystore=#hrStore&amp;alias=hr&amp;password=hrSecret" />
+			<log
+				message="Signature for body ${body} is ${in.header.CamelDigitalSignature}" />
+			<log message="sigInfoEndpoint with encrypted body ${body}" />
+			<!-- encryption with RSA (PGP) -->
+			<marshal ref="rsaEncrypt" />
+			<log message="sigInfoEndpoint with encrypted body ${body}" />
+			<to uri="direct:hr" />
+			<choice>
+				<when>
+					<method bean="signalement" method="isSolved" />
+					<to uri="direct:sac" />
+						<setBody>
+							<simple trim="false">2</simple>
+						</setBody>
+						
+					<log message="sac with decrypted body ${body}" />
+				</when>
+				<otherwise>
+					<to uri="direct:ac" />
+					<setBody>
+						<simple trim="false">1</simple>
+					</setBody>
+					<log message="ac with decrypted body ${body}" />
+				</otherwise>
+			</choice>
+		</route>
+		<route id="hr">
+			<from uri="direct:hr" />
+				<unmarshal ref="rsaDecrypt" />
+			<log message="hr with decrypted body ${body}" />
+				<bean ref="signalement" method="getSignalementData" />
+			<convertBodyTo type="String" />
+			<inOnly uri="activemq:topic:Signalement"/>
+			<log message="Routing message to the QUEUE ${body}" />
+			<log message="hr finished with body ${body}" />
+
+		</route>
+		
+		<route id="ac">
+			<from uri="direct:ac" />
+			<bean ref="ordremission" method="getOrdreDeMissionData" />
+			<convertBodyTo type="String" />
+			<log message="ac finished with body ${body}" />
+			<log message="ac with encrypted body ${body}" />
+		</route>
+
+		<route id="sac">
+			<from uri="direct:sac" />
+			<bean ref="ordremission" method="CreateOrdreMission" />
+			<log message="sac finished with body ${body}" />
+		<log message="sac with encrypted body ${body}" />
+		</route>
+	</camelContext>
+</beans>
